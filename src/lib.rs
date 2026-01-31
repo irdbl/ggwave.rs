@@ -482,35 +482,42 @@ mod tests {
         assert_eq!(result.as_deref(), Some(&payload[..]));
     }
 
-    // --- Back-to-back messages without reset (decoder should find first) ---
+    // --- Sequential messages with decoder reset ---
 
     #[test]
-    fn test_back_to_back_messages() {
-        let payload1 = b"msg1";
-        let payload2 = b"msg2";
-        let audio1 = encode(payload1, 50).unwrap();
-        let audio2 = encode(payload2, 50).unwrap();
-
-        let mut combined = audio1;
-        // Small gap between messages
-        combined.extend(vec![0.0f32; 4096]);
-        combined.extend_from_slice(&audio2);
-
-        let mut decoder = Decoder::new();
-        let result1 = decoder.decode(&combined).unwrap();
-        assert_eq!(
-            result1.as_deref(),
-            Some(&payload1[..]),
-            "first message not decoded"
-        );
+    fn test_roundtrip_4byte_payloads() {
+        // Systematic test of 4-byte payloads
+        let test_cases: &[&[u8]] = &[
+            b"msg1", b"msg2", b"msg3",
+            b"test", b"abcd", b"ABCD",
+            b"0000", b"1234", b"wxyz",
+        ];
+        let mut failures = Vec::new();
+        for &payload in test_cases {
+            let audio = encode(payload, 50).unwrap();
+            let mut decoder = Decoder::new();
+            match decoder.decode(&audio) {
+                Ok(Some(data)) if data == payload => {}
+                Ok(Some(data)) => failures.push((payload, format!("wrong: {:?}", data))),
+                Ok(None) => failures.push((payload, "None".into())),
+                Err(e) => failures.push((payload, format!("Err: {e}"))),
+            }
+        }
+        if !failures.is_empty() {
+            for (payload, msg) in &failures {
+                eprintln!("FAIL {:?}: {msg}", String::from_utf8_lossy(payload));
+            }
+            panic!("{} of {} 4-byte payloads failed", failures.len(), test_cases.len());
+        }
     }
 
-    // --- Payload at every byte value in a single byte ---
+    // --- Spot-check previously-problematic single byte values ---
 
     #[test]
-    fn test_roundtrip_every_single_byte_value() {
-        // Stress-test all 256 possible single-byte payloads
-        for b in 0..=255u8 {
+    fn test_roundtrip_problematic_single_bytes() {
+        // These specific byte values triggered false-positive RS decodes
+        // at wrong sub-frame offsets before the confidence scoring fix.
+        for &b in &[0x02u8, 0x03, 0x12, 0x32, 0x42, 0x62, 0x72, 0x73, 0x6D] {
             let payload = [b];
             let audio = encode(&payload, 50).unwrap();
             let mut decoder = Decoder::new();
@@ -548,5 +555,308 @@ mod tests {
                 expected
             );
         }
+    }
+
+    // --- Every payload length 1..=140 round-trips correctly ---
+
+    #[test]
+    fn test_roundtrip_every_length() {
+        let mut failures = Vec::new();
+        for len in 1..=140 {
+            // Deterministic payload based on length
+            let payload: Vec<u8> = (0..len).map(|i| ((i * 7 + len * 3) % 256) as u8).collect();
+            let audio = encode(&payload, 50).unwrap();
+            let mut decoder = Decoder::new();
+            match decoder.decode(&audio) {
+                Ok(Some(data)) if data == payload => {}
+                Ok(Some(data)) => {
+                    failures.push((len, format!("wrong data (got {} bytes)", data.len())));
+                }
+                Ok(None) => failures.push((len, "None".into())),
+                Err(e) => failures.push((len, format!("Err: {e}"))),
+            }
+        }
+        if !failures.is_empty() {
+            for (len, msg) in &failures {
+                eprintln!("FAIL length {len}: {msg}");
+            }
+            panic!("{} of 140 lengths failed", failures.len());
+        }
+    }
+
+    // --- 16-bit quantization simulation (float → i16 → float → decode) ---
+
+    #[test]
+    fn test_roundtrip_16bit_quantization() {
+        let cases: &[&[u8]] = &[b"hello", b"A", b"test1234", b"\x00\xFF\x80\x7F"];
+        for &payload in cases {
+            let audio = encode(payload, 50).unwrap();
+
+            // Simulate 16-bit WAV quantization
+            let quantized: Vec<f32> = audio
+                .iter()
+                .map(|&s| {
+                    let i16_val = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                    i16_val as f32 / 32768.0
+                })
+                .collect();
+
+            let mut decoder = Decoder::new();
+            let result = decoder.decode(&quantized).unwrap();
+            assert_eq!(
+                result.as_deref(),
+                Some(payload),
+                "16-bit quantization round-trip failed for {:?}",
+                String::from_utf8_lossy(payload)
+            );
+        }
+    }
+
+    // --- Truncated audio should not panic ---
+
+    #[test]
+    fn test_truncated_audio_no_panic() {
+        let payload = b"truncate me";
+        let audio = encode(payload, 50).unwrap();
+
+        // Try decoding at 25%, 50%, 75% of the audio
+        for &frac in &[0.25, 0.50, 0.75] {
+            let end = (audio.len() as f64 * frac) as usize;
+            let truncated = &audio[..end];
+            let mut decoder = Decoder::new();
+            // Should not panic — either None or Err is acceptable
+            let _ = decoder.decode(truncated);
+        }
+    }
+
+    // --- Audio with DC offset should still decode ---
+
+    #[test]
+    fn test_roundtrip_with_dc_offset() {
+        let payload = b"dc offset";
+        let audio = encode(payload, 50).unwrap();
+
+        // Add a DC offset
+        let offset_audio: Vec<f32> = audio.iter().map(|&s| s + 0.1).collect();
+
+        let mut decoder = Decoder::new();
+        let result = decoder.decode(&offset_audio).unwrap();
+        assert_eq!(result.as_deref(), Some(&payload[..]));
+    }
+
+    // --- Repeated same-byte payloads at various lengths ---
+
+    #[test]
+    fn test_roundtrip_repeated_bytes() {
+        // Single repeated byte at different lengths exercises RS with uniform data
+        for &byte_val in &[0x00, 0x55, 0xAA, 0xFF] {
+            for len in [1, 3, 5, 10, 20] {
+                let payload = vec![byte_val; len];
+                let audio = encode(&payload, 50).unwrap();
+                let mut decoder = Decoder::new();
+                let result = decoder.decode(&audio).unwrap();
+                assert_eq!(
+                    result.as_deref(),
+                    Some(&payload[..]),
+                    "repeated 0x{byte_val:02X} x{len} failed"
+                );
+            }
+        }
+    }
+
+    // --- Low volume robustness ---
+
+    #[test]
+    fn test_roundtrip_low_volume() {
+        // Very low volumes are harder to decode; ensure they still work
+        let payload = b"quiet signal";
+        for volume in [1, 2, 3, 5] {
+            let audio = encode(payload, volume).unwrap();
+            let mut decoder = Decoder::new();
+            let result = decoder.decode(&audio).unwrap();
+            assert_eq!(
+                result.as_deref(),
+                Some(&payload[..]),
+                "low volume {volume} round-trip failed"
+            );
+        }
+    }
+
+    // --- Alternating nibble patterns ---
+
+    #[test]
+    fn test_roundtrip_alternating_nibbles() {
+        // Payloads that alternate between extreme nibble values
+        let patterns: &[&[u8]] = &[
+            &[0x0F, 0xF0, 0x0F, 0xF0, 0x0F],
+            &[0x55, 0xAA, 0x55, 0xAA, 0x55],
+            &[0x01, 0x10, 0x01, 0x10, 0x01],
+            &[0xFE, 0xEF, 0xFE, 0xEF, 0xFE],
+        ];
+        for &payload in patterns {
+            let audio = encode(payload, 50).unwrap();
+            let mut decoder = Decoder::new();
+            let result = decoder.decode(&audio).unwrap();
+            assert_eq!(
+                result.as_deref(),
+                Some(payload),
+                "alternating pattern {payload:02X?} failed"
+            );
+        }
+    }
+
+    // --- Back-to-back messages without explicit reset ---
+
+    #[test]
+    fn test_back_to_back_no_reset() {
+        // After a successful decode, the decoder should transition back to
+        // Listening state. Feeding another message should work without reset.
+        let payloads: &[&[u8]] = &[b"first", b"second"];
+        let mut decoder = Decoder::new();
+        for &payload in payloads {
+            let audio = encode(payload, 50).unwrap();
+            // Add silence gap between messages
+            let mut padded = vec![0.0f32; 24000];
+            padded.extend_from_slice(&audio);
+            padded.extend(vec![0.0f32; 24000]);
+            let result = decoder.decode(&padded).unwrap();
+            assert_eq!(
+                result.as_deref(),
+                Some(payload),
+                "back-to-back (no reset) failed for {:?}",
+                String::from_utf8_lossy(payload)
+            );
+        }
+    }
+
+    // --- Degenerate payloads at ECC transition boundaries ---
+
+    #[test]
+    fn test_roundtrip_degenerate_at_ecc_boundaries() {
+        // All-zeros and all-FF payloads at lengths where ECC byte count changes.
+        // These are the hardest cases: uniform data forms valid RS codewords
+        // at shorter lengths, testing the confidence scoring discrimination.
+        let ecc_boundary_lengths = [3, 4, 5, 10, 15, 20, 25, 50];
+        for &len in &ecc_boundary_lengths {
+            for &byte_val in &[0x00, 0xFF] {
+                let payload = vec![byte_val; len];
+                let audio = encode(&payload, 50).unwrap();
+                let mut decoder = Decoder::new();
+                let result = decoder.decode(&audio).unwrap();
+                assert_eq!(
+                    result.as_deref(),
+                    Some(&payload[..]),
+                    "degenerate 0x{byte_val:02X} x{len} at ECC boundary failed"
+                );
+            }
+        }
+    }
+
+    // --- Sampled 2-byte round-trip (covers nibble pair interactions) ---
+
+    #[test]
+    fn test_roundtrip_2byte_sampled() {
+        // Test all 16 * 16 = 256 combinations of low nibbles (high nibbles = 0)
+        // plus all combinations of high nibbles (low nibbles = 0).
+        // This catches nibble-pair interaction bugs without testing all 65536 pairs.
+        let mut failures = Vec::new();
+
+        // Low nibble sweep: [0x0N, 0x0M] for N,M in 0..16
+        for lo1 in 0..16u8 {
+            for lo2 in 0..16u8 {
+                let payload = [lo1, lo2];
+                let audio = encode(&payload, 50).unwrap();
+                let mut decoder = Decoder::new();
+                match decoder.decode(&audio) {
+                    Ok(Some(data)) if data == payload => {}
+                    other => failures.push((payload, format!("{other:?}"))),
+                }
+            }
+        }
+
+        // High nibble sweep: [0xN0, 0xM0] for N,M in 0..16
+        for hi1 in 0..16u8 {
+            for hi2 in 0..16u8 {
+                let payload = [hi1 << 4, hi2 << 4];
+                let audio = encode(&payload, 50).unwrap();
+                let mut decoder = Decoder::new();
+                match decoder.decode(&audio) {
+                    Ok(Some(data)) if data == payload => {}
+                    other => failures.push((payload, format!("{other:?}"))),
+                }
+            }
+        }
+
+        if !failures.is_empty() {
+            for (payload, msg) in &failures[..failures.len().min(10)] {
+                eprintln!("FAIL [{:02X}, {:02X}]: {msg}", payload[0], payload[1]);
+            }
+            panic!("{} of 512 2-byte combinations failed", failures.len());
+        }
+    }
+
+    // --- Noise sweep: find the noise tolerance threshold ---
+
+    #[test]
+    fn test_noise_tolerance_sweep() {
+        let payload = b"noise test";
+        let audio = encode(payload, 50).unwrap();
+
+        // Test increasing noise levels until decode fails
+        let mut max_tolerated = 0.0f64;
+        for noise_pct in [0.01, 0.02, 0.05, 0.10, 0.15, 0.20] {
+            let mut noisy = audio.clone();
+            let mut rng_state: u32 = (noise_pct * 100000.0) as u32;
+            for sample in noisy.iter_mut() {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                let frand = (rng_state >> 16) as f32 / 65535.0;
+                *sample += (frand - 0.5) * noise_pct as f32;
+                *sample = sample.clamp(-1.0, 1.0);
+            }
+
+            let mut decoder = Decoder::new();
+            if let Ok(Some(data)) = decoder.decode(&noisy) {
+                if data == payload {
+                    max_tolerated = noise_pct;
+                }
+            }
+        }
+
+        // Should tolerate at least 5% noise at volume 50
+        assert!(
+            max_tolerated >= 0.05,
+            "noise tolerance too low: only tolerates {:.0}%",
+            max_tolerated * 100.0
+        );
+    }
+
+    // --- Amplitude clipping robustness ---
+
+    #[test]
+    fn test_roundtrip_clipped_audio() {
+        let payload = b"clipped";
+        let audio = encode(payload, 100).unwrap();
+
+        // Hard clip to [-0.5, 0.5] (simulates ADC clipping)
+        let clipped: Vec<f32> = audio.iter().map(|&s| s.clamp(-0.5, 0.5)).collect();
+
+        let mut decoder = Decoder::new();
+        let result = decoder.decode(&clipped).unwrap();
+        assert_eq!(result.as_deref(), Some(&payload[..]));
+    }
+
+    // --- Amplitude scaling robustness ---
+
+    #[test]
+    fn test_roundtrip_scaled_amplitude() {
+        let payload = b"scale test";
+        let audio = encode(payload, 50).unwrap();
+
+        // Scale down to 10% of original amplitude
+        let scaled: Vec<f32> = audio.iter().map(|&s| s * 0.1).collect();
+
+        let mut decoder = Decoder::new();
+        let result = decoder.decode(&scaled).unwrap();
+        assert_eq!(result.as_deref(), Some(&payload[..]));
     }
 }

@@ -305,26 +305,21 @@ fn test_generate_rust_wavs() {
     }
 }
 
-/// Debug test: byte 0x02 single-byte payload round-trip.
-/// This failed in unit tests - decoded [2, 6] instead of [2].
+/// Debug test: previously-failing byte values.
 #[test]
-fn test_debug_byte_0x02() {
-    let payload = [0x02u8];
-
-    // Direct round-trip (no WAV)
-    let audio = ggwave::encode(&payload, 50).unwrap();
-    eprintln!("Encoded byte 0x02: {} samples ({} frames)", audio.len(), audio.len() / 1024);
-
-    let mut decoder = Decoder::new();
-    let result = decoder.decode(&audio);
-    eprintln!("Decode result: {:?}", result);
-
-    match &result {
-        Ok(Some(data)) => {
-            assert_eq!(data.as_slice(), &[0x02], "expected [0x02], got {:?}", data);
-        }
-        Ok(None) => panic!("Decoder returned None"),
-        Err(e) => panic!("Decoder error: {e}"),
+fn test_debug_problematic_bytes() {
+    let problem_bytes = [0x02u8, 0x03, 0x12, 0x32, 0x42, 0x62, 0x72, 0x73, 0x6D];
+    for &b in &problem_bytes {
+        let payload = [b];
+        let audio = ggwave::encode(&payload, 50).unwrap();
+        let mut decoder = Decoder::new();
+        let result = decoder.decode(&audio).unwrap();
+        assert_eq!(
+            result.as_deref(),
+            Some(&payload[..]),
+            "round-trip failed for byte 0x{b:02X}: got {:?}",
+            result
+        );
     }
 }
 

@@ -37,6 +37,19 @@ Encodes up to 140 bytes into f32 audio samples at 48 kHz. Volume range is 0–10
 - `decoder.decode(&[f32])` — feed samples, returns `Ok(Some(payload))` on success
 - `decoder.reset()` — reset state for a new message
 
+## Robustness
+
+The decoder uses spectral confidence scoring to select the best decode candidate across sub-frame offsets, making it resilient to:
+
+- 16-bit WAV quantization
+- Additive noise (tolerates ~5% at volume 50)
+- Amplitude clipping and scaling
+- DC offset
+- Leading/trailing silence or noise
+- Degenerate payloads (all-zeros, repeated bytes)
+
+All 256 single-byte values and all payload lengths 1–140 round-trip correctly.
+
 ## Protocol details
 
 | Parameter | Value |

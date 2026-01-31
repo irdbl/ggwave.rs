@@ -131,6 +131,7 @@ impl Decoder {
 
         // Analyze recorded data
         if self.state == DecoderState::Analyzing {
+
             let result = self.analyze();
             self.state = DecoderState::Listening;
             self.frames_to_record = 0;
@@ -183,6 +184,7 @@ impl Decoder {
             self.n_markers_success += 1;
 
             if self.n_markers_success >= 1 {
+
                 self.start_receiving();
             }
         } else {
@@ -220,7 +222,7 @@ impl Decoder {
         if n_detected == N_BITS_IN_MARKER {
             self.n_markers_success += 1;
 
-            if self.n_markers_success >= 1 && self.frames_to_record > 1 {
+            if self.n_markers_success >= 3 && self.frames_to_record > 1 {
                 self.recv_duration_frames -= self.frames_left_to_record.saturating_sub(1);
                 self.frames_left_to_record = 1;
                 self.n_markers_success = 0;
@@ -249,6 +251,9 @@ impl Decoder {
     }
 
     /// Analyze recorded data to extract payload.
+    ///
+    /// Scans all sub-frame offsets, collects valid decode candidates with
+    /// spectral confidence scores, and returns the highest-confidence result.
     fn analyze(&mut self) -> Result<Option<Vec<u8>>, crate::Error> {
         let steps_per_frame: usize = 16;
         let step = SAMPLES_PER_FRAME / steps_per_frame;
@@ -260,119 +265,146 @@ impl Decoder {
 
         let mut spectrum = vec![0.0f32; SAMPLES_PER_FRAME];
 
+        // Track best candidate across all sub-frame offsets
+        let mut best_payload: Option<Vec<u8>> = None;
+        let mut best_confidence: f64 = 0.0;
+        let mut best_decoded_length: usize = 0;
+        let mut offsets_since_first_valid: usize = 0;
+        let mut found_any_valid = false;
+
         // Try each sub-frame offset
         for ii in (0..N_MARKER_FRAMES * steps_per_frame).rev() {
-            let offset_start = ii;
-
-            let mut data_encoded = vec![0u8; MAX_DATA_SIZE];
-            let mut known_length = false;
-            let mut decoded_length: usize = 0;
-
-            for itx in 0..1024 {
-                let offset_tx =
-                    offset_start + itx * FRAMES_PER_TX * steps_per_frame;
-
-                if offset_tx >= self.recv_duration_frames * steps_per_frame {
+            // Early exit after scanning enough offsets past the first valid decode.
+            // For short payloads (<=4 bytes), scan all offsets because false-positive
+            // RS decodes are more likely. For longer payloads, use a bounded window.
+            if found_any_valid {
+                offsets_since_first_valid += 1;
+                if best_decoded_length > 4 && offsets_since_first_valid > 3 * steps_per_frame {
                     break;
-                }
-                if (itx + 1) * BYTES_PER_TX >= MAX_DATA_SIZE {
-                    break;
-                }
-
-                // Sum frames for this TX chunk
-                let sample_start = offset_tx * step;
-                if sample_start + SAMPLES_PER_FRAME > self.amplitude_recorded.len() {
-                    break;
-                }
-
-                let mut fft_buf = vec![0.0f32; SAMPLES_PER_FRAME];
-                fft_buf.copy_from_slice(
-                    &self.amplitude_recorded[sample_start..sample_start + SAMPLES_PER_FRAME],
-                );
-
-                for k in 1..FRAMES_PER_TX {
-                    let koffset = (offset_tx + k * steps_per_frame) * step;
-                    if koffset + SAMPLES_PER_FRAME > self.amplitude_recorded.len() {
-                        break;
-                    }
-                    for i in 0..SAMPLES_PER_FRAME {
-                        fft_buf[i] += self.amplitude_recorded[koffset + i];
-                    }
-                }
-
-                // FFT -> power spectrum
-                fft::power_spectrum(&fft_buf, &mut spectrum);
-
-                // Extract nibbles
-                for i in 0..(2 * BYTES_PER_TX) {
-                    let freq = HZ_PER_SAMPLE * FREQ_START as f64;
-                    let bin = (freq * IHZ_PER_SAMPLE).round() as usize + 16 * i;
-
-                    let mut kmax = 0usize;
-                    let mut amax = 0.0f32;
-                    for k in 0..16 {
-                        if bin + k < spectrum.len() && spectrum[bin + k] > amax {
-                            kmax = k;
-                            amax = spectrum[bin + k];
-                        }
-                    }
-
-                    if i % 2 != 0 {
-                        let byte_idx = itx * BYTES_PER_TX + i / 2;
-                        if byte_idx < data_encoded.len() {
-                            data_encoded[byte_idx] |= (kmax as u8) << 4;
-                        }
-                    } else {
-                        let byte_idx = itx * BYTES_PER_TX + i / 2;
-                        if byte_idx < data_encoded.len() {
-                            // Clear and set low nibble
-                            data_encoded[byte_idx] =
-                                (data_encoded[byte_idx] & 0xF0) | (kmax as u8);
-                        }
-                    }
-                }
-
-                // Try to decode length after we have enough data
-                if itx * BYTES_PER_TX > ENCODED_DATA_OFFSET && !known_length {
-                    let rs_length = ReedSolomon::new(1, ENCODED_DATA_OFFSET - 1);
-                    if let Some(decoded) = rs_length.decode(&data_encoded[..ENCODED_DATA_OFFSET]) {
-                        let len = decoded[0] as usize;
-                        if len > 0 && len <= MAX_LENGTH_VARIABLE {
-                            // Validate frame count
-                            let n_total_bytes_expected =
-                                ENCODED_DATA_OFFSET + len + ecc_bytes_for_length(len);
-                            let n_total_frames_expected = 2 * N_MARKER_FRAMES
-                                + ((n_total_bytes_expected + BYTES_PER_TX - 1) / BYTES_PER_TX)
-                                    * FRAMES_PER_TX;
-
-                            if self.recv_duration_frames <= n_total_frames_expected
-                                && self.recv_duration_frames
-                                    >= n_total_frames_expected - 2 * N_MARKER_FRAMES
-                            {
-                                known_length = true;
-                                decoded_length = len;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                // Stop reading if we have enough bytes
-                if known_length {
-                    let n_total_bytes_expected =
-                        ENCODED_DATA_OFFSET + decoded_length + ecc_bytes_for_length(decoded_length);
-                    if itx * BYTES_PER_TX > n_total_bytes_expected + 1 {
-                        break;
-                    }
                 }
             }
 
-            if known_length && decoded_length > 0 {
+            let offset_start = ii;
+
+            let mut data_encoded = vec![0u8; MAX_DATA_SIZE];
+            let mut confidence_sum: f64 = 0.0;
+            let mut confidence_count: usize = 0;
+
+            // Collect all nibble data first, then try to decode
+            let max_itx = {
+                let mut max = 0;
+                for itx in 0..1024 {
+                    let offset_tx =
+                        offset_start + itx * FRAMES_PER_TX * steps_per_frame;
+
+                    if offset_tx >= self.recv_duration_frames * steps_per_frame {
+                        break;
+                    }
+                    if (itx + 1) * BYTES_PER_TX >= MAX_DATA_SIZE {
+                        break;
+                    }
+
+                    // Sum frames for this TX chunk
+                    let sample_start = offset_tx * step;
+                    if sample_start + SAMPLES_PER_FRAME > self.amplitude_recorded.len() {
+                        break;
+                    }
+
+                    let mut fft_buf = vec![0.0f32; SAMPLES_PER_FRAME];
+                    fft_buf.copy_from_slice(
+                        &self.amplitude_recorded[sample_start..sample_start + SAMPLES_PER_FRAME],
+                    );
+
+                    for k in 1..FRAMES_PER_TX {
+                        let koffset = (offset_tx + k * steps_per_frame) * step;
+                        if koffset + SAMPLES_PER_FRAME > self.amplitude_recorded.len() {
+                            break;
+                        }
+                        for i in 0..SAMPLES_PER_FRAME {
+                            fft_buf[i] += self.amplitude_recorded[koffset + i];
+                        }
+                    }
+
+                    // FFT -> power spectrum
+                    fft::power_spectrum(&fft_buf, &mut spectrum);
+
+                    // Extract nibbles with confidence scoring
+                    for i in 0..(2 * BYTES_PER_TX) {
+                        let freq = HZ_PER_SAMPLE * FREQ_START as f64;
+                        let bin = (freq * IHZ_PER_SAMPLE).round() as usize + 16 * i;
+
+                        let mut kmax = 0usize;
+                        let mut amax = 0.0f32;
+                        let mut second_max = 0.0f32;
+                        for k in 0..16 {
+                            if bin + k < spectrum.len() {
+                                let val = spectrum[bin + k];
+                                if val > amax {
+                                    second_max = amax;
+                                    kmax = k;
+                                    amax = val;
+                                } else if val > second_max {
+                                    second_max = val;
+                                }
+                            }
+                        }
+
+                        // Confidence: peak^2 / second_peak.
+                        if second_max > 0.0 {
+                            confidence_sum += (amax as f64 * amax as f64) / second_max as f64;
+                        } else if amax > 0.0 {
+                            confidence_sum += amax as f64 * amax as f64;
+                        }
+                        confidence_count += 1;
+
+                        if i % 2 != 0 {
+                            let byte_idx = itx * BYTES_PER_TX + i / 2;
+                            if byte_idx < data_encoded.len() {
+                                data_encoded[byte_idx] |= (kmax as u8) << 4;
+                            }
+                        } else {
+                            let byte_idx = itx * BYTES_PER_TX + i / 2;
+                            if byte_idx < data_encoded.len() {
+                                data_encoded[byte_idx] =
+                                    (data_encoded[byte_idx] & 0xF0) | (kmax as u8);
+                            }
+                        }
+                    }
+
+                    max = itx + 1;
+                }
+                max
+            };
+
+            if max_itx == 0 {
+                continue;
+            }
+
+            // Try to decode the length from the first 3 bytes
+            let rs_length = ReedSolomon::new(1, ENCODED_DATA_OFFSET - 1);
+            let decoded_length = if let Some(decoded) =
+                rs_length.decode(&data_encoded[..ENCODED_DATA_OFFSET])
+            {
+                let len = decoded[0] as usize;
+                if len > 0 && len <= MAX_LENGTH_VARIABLE {
+                    // Ensure we have enough TX chunks extracted
+                    let n_total_bytes_expected =
+                        ENCODED_DATA_OFFSET + len + ecc_bytes_for_length(len);
+                    let n_total_tx = (n_total_bytes_expected + BYTES_PER_TX - 1) / BYTES_PER_TX;
+                    if max_itx >= n_total_tx {
+
+                        Some(len)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(decoded_length) = decoded_length {
                 let n_ecc = ecc_bytes_for_length(decoded_length);
                 let rs_data = ReedSolomon::new(decoded_length, n_ecc);
 
@@ -381,12 +413,30 @@ impl Decoder {
 
                 if data_end <= data_encoded.len() {
                     if let Some(decoded) = rs_data.decode(&data_encoded[data_start..data_end]) {
-                        return Ok(Some(decoded));
+                        let avg_confidence = if confidence_count > 0 {
+                            confidence_sum / confidence_count as f64
+                        } else {
+                            0.0
+                        };
+
+                        if avg_confidence > best_confidence {
+                            best_confidence = avg_confidence;
+                            best_payload = Some(decoded);
+                            best_decoded_length = decoded_length;
+                        }
+                        if !found_any_valid {
+                            found_any_valid = true;
+                            offsets_since_first_valid = 0;
+                        }
                     }
                 }
             }
         }
 
-        Err(crate::Error::DecodeFailed)
+        if let Some(payload) = best_payload {
+            Ok(Some(payload))
+        } else {
+            Err(crate::Error::DecodeFailed)
+        }
     }
 }
