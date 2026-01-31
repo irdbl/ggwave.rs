@@ -1,0 +1,13 @@
+[package]
+name = "ggwave"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of ggwave AUDIBLE_FAST codec — encode text to audio and decode audio to text at 48kHz"
+license = "MIT"
+
+[dependencies]
+rustfft = "6"
+thiserror = "2"
+
+[dev-dependencies]
+hound = "3"
