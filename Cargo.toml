@@ -11,3 +11,8 @@ thiserror = "2"
 
 [dev-dependencies]
 hound = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "bandwidth"
+harness = false
