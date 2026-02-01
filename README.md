@@ -34,6 +34,34 @@ Each symbol carries 4 bits (16 symbols total), synthesized as a harmonic series 
 
 All F1 values are ≥480 Hz to survive 300 Hz phone highpass filters.
 
+## Listen
+
+What data sounds like when encoded as vowels:
+
+<table>
+<tr><td><b>Single message</b> (86 bytes, 16s)</td></tr>
+<tr><td><i>"The quick brown fox jumps over the lazy dog. This message was encoded as vowel sounds."</i></td></tr>
+<tr><td>
+
+https://github.com/irdbl/ggwave.rs/raw/master/samples/single_message.mp3
+
+</td></tr>
+<tr><td><b>Streaming FEC</b> (106 bytes, 20s)</td></tr>
+<tr><td><i>"Streaming mode sends a continuous RS-coded symbol stream. Reed-Solomon over GF(2^4) corrects burst errors."</i></td></tr>
+<tr><td>
+
+https://github.com/irdbl/ggwave.rs/raw/master/samples/streaming_fec.mp3
+
+</td></tr>
+<tr><td><b>Full payload</b> (132 bytes, 24s)</td></tr>
+<tr><td><i>"Eight machine-optimized vowels carry three bits each via formant frequencies. Pitch adds one more bit per symbol, for sixteen total."</i></td></tr>
+<tr><td>
+
+https://github.com/irdbl/ggwave.rs/raw/master/samples/max_payload.mp3
+
+</td></tr>
+</table>
+
 ## Usage
 
 ### Single-message API
