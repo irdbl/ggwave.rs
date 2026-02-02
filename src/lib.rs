@@ -2,7 +2,7 @@
 //!
 //! Encode byte payloads to 48 kHz f32 audio using two orthogonal channels
 //! (formant vowels, dual-F0 pitch) and decode f32 audio back to bytes.
-//! Each symbol carries 4 bits (16 symbols).
+//! Teams branch: 4 vowels × 2 pitches = 8 symbols (3 bits per symbol).
 //!
 //! # Example
 //!
@@ -16,6 +16,7 @@
 pub mod protocol;
 pub mod reed_solomon;
 pub mod rs4;
+pub mod rs3;
 pub mod dss;
 pub mod fft;
 pub mod formant;

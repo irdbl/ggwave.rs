@@ -1,20 +1,23 @@
-//! Streaming FEC codec: continuous RS-coded symbol stream with convolutional interleaving.
+//! Streaming FEC codec: continuous RS-coded symbol stream with block interleaving.
 //!
 //! Eliminates per-frame preamble overhead and ACK round-trips. Data flows as a continuous
-//! RS(15,k) coded symbol stream where each GF(2^4) symbol maps directly to a modem symbol.
+//! RS(7,k) coded symbol stream where each GF(2^3) symbol maps directly to a modem symbol.
+//!
+//! Teams branch uses 8 modem symbols (4 vowels × 2 pitches = 3 bits), which maps 1:1
+//! to GF(2^3) elements, allowing efficient RS coding without symbol mapping overhead.
 //!
 //! ```text
-//! Send: bytes -> nibbles -> RS(15,k) encode -> interleave -> synthesize -> audio
-//! Recv: audio -> preamble detect -> classify -> deinterleave -> RS(15,k) decode -> bytes
+//! Send: bytes -> 3-bit symbols -> RS(7,k) encode -> interleave -> synthesize -> audio
+//! Recv: audio -> preamble detect -> classify -> deinterleave -> RS(7,k) decode -> bytes
 //! ```
 
 use crate::fft;
 use crate::formant;
 use crate::protocol::*;
-use crate::rs4::ReedSolomon4;
+use crate::rs3::ReedSolomon3;
 
-/// Codeword length for GF(2^4): n = 2^4 - 1 = 15.
-const CODEWORD_LEN: usize = 15;
+/// Codeword length for GF(2^3): n = 2^3 - 1 = 7.
+const CODEWORD_LEN: usize = 7;
 
 /// Stream start preamble: uses max-distance vowel pair (vowels 0 and 3).
 const STREAM_PREAMBLE_START: [u8; PREAMBLE_LEN] = [0, 6, 0, 6];
@@ -30,9 +33,10 @@ const ERASURE_THRESHOLD: f64 = 1.0;
 /// Configuration for the streaming codec.
 #[derive(Debug, Clone)]
 pub struct StreamConfig {
-    /// Parity symbols per RS codeword (default: 4). Data symbols = 15 - parity.
+    /// Parity symbols per RS codeword (default: 2). Data symbols = 7 - parity.
+    /// Max parity is 6 (leaving 1 data symbol).
     pub rs_parity: u8,
-    /// Convolutional interleaver depth / branches (default: 2). 1 = no interleaving.
+    /// Block interleaver depth (default: 2). 1 = no interleaving.
     pub interleave_depth: u8,
     /// Audio volume 0..=100 (default: 50).
     pub volume: u8,
@@ -41,7 +45,7 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
     fn default() -> Self {
         Self {
-            rs_parity: 4,
+            rs_parity: 2,
             interleave_depth: 2,
             volume: 50,
         }
@@ -190,9 +194,13 @@ impl Deinterleaver {
 /// call `finish()` when done, then call `emit()` repeatedly to get audio samples.
 pub struct StreamTx {
     config: StreamConfig,
-    rs: ReedSolomon4,
+    rs: ReedSolomon3,
     interleaver: Interleaver,
-    nibble_buf: Vec<u8>,
+    /// Buffer for 3-bit symbols extracted from input bytes.
+    sym3_buf: Vec<u8>,
+    /// Accumulated bits from incomplete byte-to-symbol conversion.
+    bit_accum: u32,
+    bit_count: usize,
     symbol_queue: Vec<u8>,
     sample_pos: usize,
     current_symbol_audio: Vec<f64>,
@@ -208,14 +216,16 @@ pub struct StreamTx {
 impl StreamTx {
     pub fn new(config: StreamConfig) -> Self {
         let data_len = config.data_per_codeword();
-        let rs = ReedSolomon4::new(data_len, config.rs_parity as usize);
+        let rs = ReedSolomon3::new(data_len, config.rs_parity as usize);
         let interleaver = Interleaver::new(config.interleave_depth as usize);
         let send_volume = config.volume as f64 / 100.0;
         Self {
             config,
             rs,
             interleaver,
-            nibble_buf: Vec::new(),
+            sym3_buf: Vec::new(),
+            bit_accum: 0,
+            bit_count: 0,
             symbol_queue: Vec::new(),
             sample_pos: 0,
             current_symbol_audio: Vec::new(),
@@ -229,13 +239,17 @@ impl StreamTx {
         }
     }
 
-    /// Queue data bytes for transmission. The first call should include a 2-byte
-    /// length prefix (high nibble, low nibble of payload length) or callers can
-    /// use `feed_with_length()` for automatic framing.
+    /// Queue raw bytes for transmission (caller handles framing).
     pub fn feed_raw(&mut self, bytes: &[u8]) {
+        // Convert bytes to 3-bit symbols
         for &b in bytes {
-            self.nibble_buf.push((b >> 4) & 0x0F);
-            self.nibble_buf.push(b & 0x0F);
+            self.bit_accum = (self.bit_accum << 8) | (b as u32);
+            self.bit_count += 8;
+            while self.bit_count >= 3 {
+                self.bit_count -= 3;
+                let sym = ((self.bit_accum >> self.bit_count) & 0x7) as u8;
+                self.sym3_buf.push(sym);
+            }
         }
     }
 
@@ -243,15 +257,11 @@ impl StreamTx {
     /// The length byte is prepended so the receiver knows how many payload bytes to expect.
     pub fn feed(&mut self, payload: &[u8]) {
         assert!(payload.len() <= 255, "stream payload max 255 bytes");
-        // Length prefix: 1 byte = 2 nibbles
+        // Length prefix: 1 byte
         let len = payload.len() as u8;
-        self.nibble_buf.push((len >> 4) & 0x0F);
-        self.nibble_buf.push(len & 0x0F);
+        self.feed_raw(&[len]);
         // Payload
-        for &b in payload {
-            self.nibble_buf.push((b >> 4) & 0x0F);
-            self.nibble_buf.push(b & 0x0F);
-        }
+        self.feed_raw(payload);
     }
 
     /// Signal that no more data will be fed. Flushes remaining nibbles with zero-padding.
@@ -309,8 +319,8 @@ impl StreamTx {
 
     fn encode_codewords(&mut self) {
         let k = self.config.data_per_codeword();
-        while self.nibble_buf.len() >= k {
-            let data: Vec<u8> = self.nibble_buf.drain(..k).collect();
+        while self.sym3_buf.len() >= k {
+            let data: Vec<u8> = self.sym3_buf.drain(..k).collect();
             let encoded = self.rs.encode(&data);
             for &sym in &encoded {
                 self.interleaver.push(sym);
@@ -323,14 +333,22 @@ impl StreamTx {
     }
 
     fn flush_final(&mut self) {
+        // Flush any remaining bits as a partial symbol
+        if self.bit_count > 0 {
+            let sym = ((self.bit_accum << (3 - self.bit_count)) & 0x7) as u8;
+            self.sym3_buf.push(sym);
+            self.bit_count = 0;
+            self.bit_accum = 0;
+        }
+
         let k = self.config.data_per_codeword();
 
-        // Pad remaining nibbles to fill a codeword
-        if !self.nibble_buf.is_empty() {
-            while self.nibble_buf.len() < k {
-                self.nibble_buf.push(0);
+        // Pad remaining symbols to fill a codeword
+        if !self.sym3_buf.is_empty() {
+            while self.sym3_buf.len() < k {
+                self.sym3_buf.push(0);
             }
-            let data: Vec<u8> = self.nibble_buf.drain(..k).collect();
+            let data: Vec<u8> = self.sym3_buf.drain(..k).collect();
             let encoded = self.rs.encode(&data);
             for &sym in &encoded {
                 self.interleaver.push(sym);
@@ -405,7 +423,7 @@ impl StreamTx {
 /// Streaming receiver: ingests audio samples, outputs decoded bytes.
 pub struct StreamRx {
     config: StreamConfig,
-    rs: ReedSolomon4,
+    rs: ReedSolomon3,
     deinterleaver: Deinterleaver,
     sample_buf: Vec<f32>,
     recent_vowels: Vec<usize>,
@@ -414,7 +432,8 @@ pub struct StreamRx {
     codeword_buf: Vec<u8>,
     codeword_conf: Vec<f64>,
     output_buf: Vec<u8>,
-    decoded_nibbles: Vec<u8>,
+    /// Decoded 3-bit symbols from RS decoding.
+    decoded_symbols: Vec<u8>,
     stream_symbol_count: usize,
 }
 
@@ -427,7 +446,7 @@ enum RxState {
 impl StreamRx {
     pub fn new(config: StreamConfig) -> Self {
         let data_len = config.data_per_codeword();
-        let rs = ReedSolomon4::new(data_len, config.rs_parity as usize);
+        let rs = ReedSolomon3::new(data_len, config.rs_parity as usize);
         let deinterleaver = Deinterleaver::new(config.interleave_depth as usize);
         Self {
             config,
@@ -440,7 +459,7 @@ impl StreamRx {
             codeword_buf: Vec::new(),
             codeword_conf: Vec::new(),
             output_buf: Vec::new(),
-            decoded_nibbles: Vec::new(),
+            decoded_symbols: Vec::new(),
             stream_symbol_count: 0,
         }
     }
@@ -495,7 +514,7 @@ impl StreamRx {
                     self.recent_symbols.clear();
                     self.codeword_buf.clear();
                     self.codeword_conf.clear();
-                    self.decoded_nibbles.clear();
+                    self.decoded_symbols.clear();
                     self.output_buf.clear();
                     self.stream_symbol_count = 0;
                     self.deinterleaver =
@@ -573,36 +592,39 @@ impl StreamRx {
         });
 
         if let Some(data) = decoded {
-            self.decoded_nibbles.extend_from_slice(&data);
+            self.decoded_symbols.extend_from_slice(&data);
         }
     }
 
-    /// Reassemble decoded nibbles into bytes using the length prefix.
+    /// Reassemble decoded 3-bit symbols into bytes using the length prefix.
     fn finalize_output(&mut self) {
-        if self.decoded_nibbles.len() < 2 {
+        // Convert 3-bit symbols to bytes
+        // First, convert all symbols to a byte stream
+        let mut bit_accum: u32 = 0;
+        let mut bit_count = 0;
+        let mut bytes = Vec::new();
+
+        for &sym in &self.decoded_symbols {
+            bit_accum = (bit_accum << 3) | ((sym & 0x7) as u32);
+            bit_count += 3;
+            while bit_count >= 8 {
+                bit_count -= 8;
+                bytes.push(((bit_accum >> bit_count) & 0xFF) as u8);
+            }
+        }
+
+        if bytes.is_empty() {
             return;
         }
 
-        let len_byte = (self.decoded_nibbles[0] << 4) | self.decoded_nibbles[1];
-        if len_byte == 0 {
+        // First byte is length prefix
+        let len_byte = bytes[0] as usize;
+        if len_byte == 0 || len_byte > bytes.len() - 1 {
             return;
         }
-
-        let payload_start = 2;
-        let payload_nibbles = &self.decoded_nibbles[payload_start..];
-        let total_payload_bytes = len_byte as usize;
-        let available = (payload_nibbles.len() / 2).min(total_payload_bytes);
 
         self.output_buf.clear();
-        for i in 0..available {
-            let hi = payload_nibbles[i * 2];
-            let lo = if i * 2 + 1 < payload_nibbles.len() {
-                payload_nibbles[i * 2 + 1]
-            } else {
-                0
-            };
-            self.output_buf.push((hi << 4) | lo);
-        }
+        self.output_buf.extend_from_slice(&bytes[1..1 + len_byte]);
     }
 }
 
@@ -638,8 +660,8 @@ mod tests {
     #[test]
     fn test_interleaver_depth1_passthrough() {
         let mut il = Interleaver::new(1);
-        // Depth 1: each block is 1*15 = 15 symbols, passthrough
-        let data: Vec<u8> = (0..15).collect();
+        // Depth 1: each block is 1*7 = 7 symbols, passthrough
+        let data: Vec<u8> = (0..7).collect();
         for &sym in &data {
             il.push(sym);
         }
@@ -659,7 +681,7 @@ mod tests {
             // N codewords worth of data (exactly fills interleaver blocks)
             let n_codewords = depth * 2; // 2 full blocks
             let data: Vec<u8> = (0..(n_codewords * CODEWORD_LEN))
-                .map(|i| (i % 16) as u8)
+                .map(|i| (i % 8) as u8)  // GF(2^3) symbols are 0..7
                 .collect();
 
             // Interleave
@@ -699,7 +721,8 @@ mod tests {
         let mut il = Interleaver::new(depth);
         let mut dil = Deinterleaver::new(depth);
 
-        let data: Vec<u8> = (0..30).map(|i| (i % 16) as u8).collect();
+        // 2 codewords * 7 symbols = 14 symbols
+        let data: Vec<u8> = (0..14).map(|i| (i % 8) as u8).collect();
         for &sym in &data {
             il.push(sym);
         }
@@ -708,9 +731,9 @@ mod tests {
             interleaved.push(s);
         }
 
-        // Corrupt 4 consecutive symbols in the interleaved stream
-        for i in 4..8 {
-            interleaved[i] = 15; // arbitrary corruption
+        // Corrupt 2 consecutive symbols in the interleaved stream
+        for i in 2..4 {
+            interleaved[i] = 7; // arbitrary corruption
         }
 
         for &sym in &interleaved {
@@ -721,23 +744,23 @@ mod tests {
             deinterleaved.push(s);
         }
 
-        // After deinterleaving, the 4 corrupted symbols should be spread
-        // across 2 codewords (2 errors each), not concentrated in one
-        let cw1 = &deinterleaved[0..15];
-        let cw2 = &deinterleaved[15..30];
-        let orig_cw1 = &data[0..15];
-        let orig_cw2 = &data[15..30];
+        // After deinterleaving, the 2 corrupted symbols should be spread
+        // across 2 codewords (1 error each), not concentrated in one
+        let cw1 = &deinterleaved[0..7];
+        let cw2 = &deinterleaved[7..14];
+        let orig_cw1 = &data[0..7];
+        let orig_cw2 = &data[7..14];
         let diff1: usize = cw1.iter().zip(orig_cw1).filter(|(a, b)| a != b).count();
         let diff2: usize = cw2.iter().zip(orig_cw2).filter(|(a, b)| a != b).count();
-        assert_eq!(diff1 + diff2, 4, "total errors should be 4");
-        assert!(diff1 <= 2 && diff2 <= 2, "errors should be spread: cw1={diff1}, cw2={diff2}");
+        assert_eq!(diff1 + diff2, 2, "total errors should be 2");
+        assert!(diff1 <= 1 && diff2 <= 1, "errors should be spread: cw1={diff1}, cw2={diff2}");
     }
 
     #[test]
     fn test_stream_config_default() {
         let cfg = StreamConfig::default();
-        assert_eq!(cfg.data_per_codeword(), 11);
-        assert_eq!(cfg.rs_parity, 4);
+        assert_eq!(cfg.data_per_codeword(), 5); // 7 - 2 parity = 5
+        assert_eq!(cfg.rs_parity, 2);
         assert_eq!(cfg.interleave_depth, 2);
     }
 }
