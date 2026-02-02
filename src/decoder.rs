@@ -493,12 +493,14 @@ impl Decoder {
 
 /// Confidence threshold below which a symbol is considered unreliable.
 /// Normalized confidence is 0..1; weaker symbols cluster below ~0.3.
-const ERASURE_CONFIDENCE_THRESHOLD: f64 = 0.35;
+/// Lowered to 0.25 to be more aggressive with erasure marking.
+const ERASURE_CONFIDENCE_THRESHOLD: f64 = 0.25;
 
 /// Convert per-symbol confidences to byte-level RS erasure positions.
 ///
-/// Each byte is packed from 2 symbols (high nibble, low nibble).
-/// Byte confidence = min of its two symbol confidences.
+/// Each byte is packed from ceil(8/BITS_PER_SYMBOL) symbols.
+/// With 3-bit symbols, each byte spans ~2.67 symbols.
+/// Byte confidence = min of contributing symbol confidences.
 /// Returns positions of the weakest bytes (below threshold), capped at
 /// `ecc_len / 2` to leave room for hard error correction.
 fn compute_byte_erasures(
@@ -507,18 +509,33 @@ fn compute_byte_erasures(
     num_bytes: usize,
     ecc_len: usize,
 ) -> Vec<usize> {
-    let max_erasures = ecc_len / 2;
+    // RS can correct: 2*errors + erasures <= ecc_len
+    // Allow up to 2/3 of ECC capacity for erasures, leaving room for some errors
+    let max_erasures = (ecc_len * 2) / 3;
     if max_erasures == 0 {
         return Vec::new();
     }
 
-    // Each byte comes from 2 symbols (4 bits each = 8 bits per byte)
+    // Compute which symbols contribute to each byte based on BITS_PER_SYMBOL
     let mut byte_confs: Vec<(usize, f64)> = (0..num_bytes)
         .map(|byte_idx| {
-            let sym_base = sym_offset + byte_idx * 2;
-            let c0 = symbol_confidences.get(sym_base).copied().unwrap_or(0.0);
-            let c1 = symbol_confidences.get(sym_base + 1).copied().unwrap_or(0.0);
-            (byte_idx, c0.min(c1))
+            // Byte i spans bits [i*8, i*8+7]
+            let bit_start = byte_idx * 8;
+            let bit_end = bit_start + 7;
+            // Symbol j spans bits [j*BITS_PER_SYMBOL, j*BITS_PER_SYMBOL + BITS_PER_SYMBOL - 1]
+            let first_sym = bit_start / BITS_PER_SYMBOL;
+            let last_sym = bit_end / BITS_PER_SYMBOL;
+
+            // Take min confidence of all contributing symbols
+            let mut min_conf = 1.0f64;
+            for sym_idx in first_sym..=last_sym {
+                let conf = symbol_confidences
+                    .get(sym_offset + sym_idx)
+                    .copied()
+                    .unwrap_or(0.0);
+                min_conf = min_conf.min(conf);
+            }
+            (byte_idx, min_conf)
         })
         .collect();
 
