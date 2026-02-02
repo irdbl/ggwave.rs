@@ -11,10 +11,16 @@ use std::f64::consts::PI;
 
 use crate::protocol::*;
 
-/// Vowel parameters for one symbol (F2-only for VoIP compatibility).
+/// Vowel parameters for one symbol.
+///
+/// Primary detection uses F2-only (VoIP-safe).
+/// Hybrid mode also uses F1 as secondary signal when available.
 #[derive(Debug, Clone, Copy)]
 pub struct VowelParams {
-    /// F2 formant frequency (1000-2500 Hz range).
+    /// F1 formant frequency (300-850 Hz range) - secondary signal.
+    /// Used by hybrid detector when F1 band is available (clean channels).
+    pub f1: f64,
+    /// F2 formant frequency (1000-2500 Hz range) - primary signal.
     pub f2: f64,
 }
 
@@ -44,20 +50,25 @@ impl PitchClass {
     }
 }
 
-/// The 4-vowel alphabet, F2-only design for VoIP compatibility.
+/// The 4-vowel alphabet with hybrid F1+F2 detection.
 ///
-/// Uses only the F2 band (1000-2500 Hz) which survives Teams/Zoom processing.
-/// Reduced to 4 vowels for reliable detection at both F0 values.
-/// The F1 band (400-850 Hz) is abandoned since VoIP codecs crush it.
+/// Primary detection uses F2-only (1000-2500 Hz) which survives VoIP processing.
+/// Hybrid mode adds F1 (300-850 Hz) as secondary signal for clean channels.
 ///
 /// F2 positions chosen for distinct harmonic alignment at BOTH F0 values:
 /// - F0_LOW=208Hz: H5=1040, H7=1456, H8=1664, H11=2288
 /// - F0_HIGH=277Hz: H4=1108, H5=1385, H6=1662, H8=2216
+///
+/// F1 positions spread across F1 band for maximum separation when available:
+/// - Low F1 (~400 Hz): H2@LOW=416, H1.5@HIGH≈415
+/// - Mid-low F1 (~520 Hz): H2.5@LOW=520, H2@HIGH=554
+/// - Mid-high F1 (~625 Hz): H3@LOW=624, H2.25@HIGH≈623
+/// - High F1 (~830 Hz): H4@LOW=832, H3@HIGH=831
 pub const VOWELS: [VowelParams; NUM_VOWELS] = [
-    VowelParams { f2: 1074.0 },  // 0 — between H5@LOW(1040) and H4@HIGH(1108)
-    VowelParams { f2: 1420.0 },  // 1 — between H7@LOW(1456) and H5@HIGH(1385)
-    VowelParams { f2: 1663.0 },  // 2 — at H8@LOW(1664), H6@HIGH(1662)
-    VowelParams { f2: 2252.0 },  // 3 — between H11@LOW(2288) and H8@HIGH(2216)
+    VowelParams { f1: 416.0, f2: 1074.0 },  // 0 — low F1, low F2
+    VowelParams { f1: 624.0, f2: 1420.0 },  // 1 — mid-high F1, mid-low F2
+    VowelParams { f1: 520.0, f2: 1663.0 },  // 2 — mid-low F1, mid-high F2
+    VowelParams { f1: 832.0, f2: 2252.0 },  // 3 — high F1, high F2
 ];
 
 /// Start preamble: vowel0@low, vowel3@low, repeat.
@@ -111,12 +122,15 @@ const HF_ROLLOFF_RATE: f64 = 600.0;
 /// Uses only F2 band (abandoned F1 for VoIP compatibility).
 /// Wider bandwidth (BW2) helps capture energy even with spectral distortion.
 /// Applies a gentle high-frequency rolloff above 2400 Hz to prevent clipping.
-pub fn harmonic_amplitudes(f2: f64, f0: f64) -> [f64; NUM_HARMONICS] {
+pub fn harmonic_amplitudes(f1: f64, f2: f64, f0: f64) -> [f64; NUM_HARMONICS] {
     let mut amps = [0.0f64; NUM_HARMONICS];
     for h in 0..NUM_HARMONICS {
         let freq = f0 * (h + 1) as f64;
-        // F2-only formant shaping with wider bandwidth for robustness
+        // Dual formant shaping: F1 (narrow) + F2 (wide for robustness)
+        let g1 = (-(freq - f1).powi(2) / (2.0 * BW1 * BW1)).exp();
         let g2 = (-(freq - f2).powi(2) / (2.0 * BW2 * BW2)).exp();
+        // Combine formants: F2 is primary, F1 adds coloring
+        let formant_gain = g2.max(g1 * 0.5);
 
         // Gentle high-frequency rolloff above knee
         let hf_atten = if freq > HF_ROLLOFF_KNEE {
@@ -125,7 +139,7 @@ pub fn harmonic_amplitudes(f2: f64, f0: f64) -> [f64; NUM_HARMONICS] {
             1.0
         };
 
-        amps[h] = g2 * hf_atten;
+        amps[h] = formant_gain * hf_atten;
     }
     let max = amps.iter().cloned().fold(0.0f64, f64::max);
     if max > 0.0 {
@@ -146,7 +160,7 @@ pub fn synthesize_symbol(symbol_idx: usize, volume: f64) -> Vec<f64> {
     let (vowel_idx, pitch_class) = symbol_to_params(symbol_idx);
     let vowel = &VOWELS[vowel_idx];
     let f0 = pitch_class.f0();
-    let amps = harmonic_amplitudes(vowel.f2, f0);
+    let amps = harmonic_amplitudes(vowel.f1, vowel.f2, f0);
 
     let fade_samples = (SAMPLE_RATE * 0.005) as usize; // 5ms = 240 samples
     let mut out = vec![0.0f64; SAMPLES_PER_SYMBOL];
@@ -262,16 +276,95 @@ pub fn detect_formants(spectrum: &[f32], _f0: f64) -> f64 {
     }
 }
 
+/// Detect F1 and F2 formants using harmonic peak detection.
+///
+/// This is the secondary detection path for hybrid mode. It finds the
+/// strongest harmonic in each formant band, which works well on clean
+/// channels but may fail when F1 is crushed by VoIP processing.
+pub fn detect_formants_f1f2(spectrum: &[f32], f0: f64) -> (f64, f64) {
+    let mut best_f1_power = 0.0f64;
+    let mut best_f1_freq = (F1_LO + F1_HI) / 2.0;
+    let mut best_f2_power = 0.0f64;
+    let mut best_f2_freq = (F2_LO + F2_HI) / 2.0;
+
+    for h in 1..=NUM_HARMONICS {
+        let freq = f0 * h as f64;
+        let bin = (freq / HZ_PER_BIN).round() as usize;
+        if bin >= spectrum.len() {
+            break;
+        }
+
+        // Sum power in 3-bin window around harmonic
+        let mut power = 0.0f64;
+        for offset in 0..=2usize {
+            if offset == 0 {
+                power += spectrum[bin] as f64;
+            } else {
+                if bin >= offset && bin - offset < spectrum.len() {
+                    power += spectrum[bin - offset] as f64;
+                }
+                if bin + offset < spectrum.len() {
+                    power += spectrum[bin + offset] as f64;
+                }
+            }
+        }
+
+        if freq >= F1_LO && freq <= F1_HI && power > best_f1_power {
+            best_f1_power = power;
+            best_f1_freq = freq;
+        }
+        if freq >= F2_LO && freq <= F2_HI && power > best_f2_power {
+            best_f2_power = power;
+            best_f2_freq = freq;
+        }
+    }
+
+    (best_f1_freq, best_f2_freq)
+}
+
 /// Classify detected F2 to the nearest vowel (1D classification).
 ///
 /// Uses simple distance in F2. Returns (vowel_index, margin_confidence).
-pub fn classify_vowel(f2: f64) -> (usize, f64) {
+/// This is the primary classifier, robust to VoIP F1 crushing.
+pub fn classify_vowel_f2(f2: f64) -> (usize, f64) {
     let mut best_idx = 0;
     let mut best_dist = f64::MAX;
     let mut second_dist = f64::MAX;
 
     for (i, v) in VOWELS.iter().enumerate() {
         let dist = (f2 - v.f2).abs() / 200.0; // Normalize by spacing
+
+        if dist < best_dist {
+            second_dist = best_dist;
+            best_dist = dist;
+            best_idx = i;
+        } else if dist < second_dist {
+            second_dist = dist;
+        }
+    }
+
+    let confidence = if best_dist > 0.0 {
+        (second_dist - best_dist) / best_dist
+    } else {
+        second_dist
+    };
+
+    (best_idx, confidence)
+}
+
+/// Classify detected (F1, F2) to the nearest vowel (2D classification).
+///
+/// Uses Euclidean distance in normalized F1/F2 space.
+/// This is the secondary classifier for hybrid mode, used when F1 is available.
+pub fn classify_vowel_f1f2(f1: f64, f2: f64) -> (usize, f64) {
+    let mut best_idx = 0;
+    let mut best_dist = f64::MAX;
+    let mut second_dist = f64::MAX;
+
+    for (i, v) in VOWELS.iter().enumerate() {
+        let d1 = (f1 - v.f1) / 100.0; // F1 spacing ~100 Hz
+        let d2 = (f2 - v.f2) / 200.0; // F2 spacing ~200 Hz
+        let dist = (d1 * d1 + d2 * d2).sqrt();
 
         if dist < best_dist {
             second_dist = best_dist;
@@ -301,27 +394,47 @@ pub fn detect_pitch(f0: f64) -> (PitchClass, f64) {
     }
 }
 
-/// Classify a full symbol from a power spectrum.
+/// Classify a full symbol from a power spectrum using hybrid detection.
 ///
-/// Orchestrates both channels: vowel (F2 detection) and pitch (F0 frequency).
-/// Returns (composite_symbol_index, composite_confidence).
+/// Runs two parallel detection paths:
+/// 1. F2-only (primary): robust to VoIP F1 crushing
+/// 2. F1+F2 (secondary): better accuracy on clean channels
+///
+/// Picks the result with higher confidence, combining the best of both.
 pub fn classify_symbol(spectrum: &[f32]) -> (usize, f64) {
     let f0 = detect_f0(spectrum);
-    let f2 = detect_formants(spectrum, f0);
-    let (vowel_idx, vowel_conf) = classify_vowel(f2);
     let (pitch_class, pitch_conf) = detect_pitch(f0);
+    let pitch_conf_norm = normalize_pitch_confidence(pitch_conf);
 
-    let symbol_idx = params_to_symbol(
-        vowel_idx,
-        pitch_class as usize,
-    );
+    // Path 1: F2-only detection (VoIP-safe, primary)
+    let f2_centroid = detect_formants(spectrum, f0);
+    let (vowel_f2, conf_f2) = classify_vowel_f2(f2_centroid);
+    let conf_f2_norm = normalize_confidence(conf_f2);
 
-    // Normalize confidences into a comparable 0..1 range before combining.
-    let vowel_conf = normalize_confidence(vowel_conf);
-    let pitch_conf = normalize_pitch_confidence(pitch_conf);
+    // Path 2: F1+F2 detection (secondary, for clean channels)
+    let (f1_peak, f2_peak) = detect_formants_f1f2(spectrum, f0);
+    let (vowel_f1f2, conf_f1f2) = classify_vowel_f1f2(f1_peak, f2_peak);
+    let conf_f1f2_norm = normalize_confidence(conf_f1f2);
+
+    // Hybrid decision logic:
+    // - If both paths agree: use result with boosted confidence
+    // - If they disagree: prefer F2-only (more reliable under distortion)
+    //   unless F1+F2 confidence is significantly higher
+    let (vowel_idx, vowel_conf) = if vowel_f2 == vowel_f1f2 {
+        // Agreement: boost confidence
+        (vowel_f2, (conf_f2_norm + conf_f1f2_norm) / 2.0 + 0.1)
+    } else if conf_f1f2_norm > conf_f2_norm + 0.15 {
+        // F1+F2 has significantly higher confidence, trust it
+        (vowel_f1f2, conf_f1f2_norm)
+    } else {
+        // Disagreement: prefer F2-only (VoIP-safe default)
+        (vowel_f2, conf_f2_norm)
+    };
+
+    let symbol_idx = params_to_symbol(vowel_idx, pitch_class as usize);
 
     // Composite confidence weighted by channel importance.
-    let confidence = vowel_conf * 0.7 + pitch_conf * 0.3;
+    let confidence = vowel_conf.min(1.0) * 0.7 + pitch_conf_norm * 0.3;
 
     (symbol_idx, confidence)
 }
@@ -453,14 +566,15 @@ mod tests {
     #[test]
     fn test_harmonic_amplitudes_shape() {
         // F2=2080 at F0_LOW=208 Hz → H10=2080 should be strong
-        let amps = harmonic_amplitudes(2080.0, F0_LOW);
+        // Use F1=500 as a dummy value (we're testing F2 behavior)
+        let amps = harmonic_amplitudes(500.0, 2080.0, F0_LOW);
         assert!(amps[9] > 0.5, "H10 should be strong near F2=2080: {}", amps[9]);
     }
 
     #[test]
     fn test_classify_known_vowels() {
         for (i, v) in VOWELS.iter().enumerate() {
-            let (sym, conf) = classify_vowel(v.f2);
+            let (sym, conf) = classify_vowel_f2(v.f2);
             assert_eq!(sym, i, "exact F2 should classify correctly for vowel {i}");
             assert!(conf > 0.0, "confidence should be positive for vowel {i}");
         }

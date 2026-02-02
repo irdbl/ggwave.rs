@@ -227,7 +227,7 @@ impl Decoder {
         fft::power_spectrum_raw(voiced, &mut spectrum);
         let f0 = formant::detect_f0(&spectrum);
         let f2 = formant::detect_formants(&spectrum, f0);
-        let (vowel_idx, _) = formant::classify_vowel(f2);
+        let (vowel_idx, _) = formant::classify_vowel_f2(f2);
         vowel_idx
     }
 
