@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use ggwave_voice::{protocol, formant};
+use song_rs::{protocol, formant};
 
 const PAYLOAD_SIZES: &[usize] = &[1, 5, 10, 25, 50, 100, 140];
 
@@ -56,12 +56,12 @@ fn bench_encode(c: &mut Criterion) {
         let duration = audio_duration_secs(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &payload, |b, payload| {
-            b.iter(|| ggwave_voice::encode(payload, 50).unwrap());
+            b.iter(|| song_rs::encode(payload, 50).unwrap());
         });
         let encode_time = {
             let start = std::time::Instant::now();
             for _ in 0..10 {
-                let _ = ggwave_voice::encode(&payload, 50).unwrap();
+                let _ = song_rs::encode(&payload, 50).unwrap();
             }
             start.elapsed().as_secs_f64() / 10.0
         };
@@ -77,19 +77,19 @@ fn bench_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode");
     for &size in PAYLOAD_SIZES {
         let payload = make_payload(size);
-        let audio = ggwave_voice::encode(&payload, 50).unwrap();
+        let audio = song_rs::encode(&payload, 50).unwrap();
         let duration = audio_duration_secs(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &audio, |b, audio| {
             b.iter(|| {
-                let mut decoder = ggwave_voice::Decoder::new();
+                let mut decoder = song_rs::Decoder::new();
                 decoder.decode(audio).unwrap().unwrap();
             });
         });
         let decode_time = {
             let start = std::time::Instant::now();
             for _ in 0..10 {
-                let mut decoder = ggwave_voice::Decoder::new();
+                let mut decoder = song_rs::Decoder::new();
                 decoder.decode(&audio).unwrap().unwrap();
             }
             start.elapsed().as_secs_f64() / 10.0
@@ -109,8 +109,8 @@ fn bench_roundtrip(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &payload, |b, payload| {
             b.iter(|| {
-                let audio = ggwave_voice::encode(payload, 50).unwrap();
-                let mut decoder = ggwave_voice::Decoder::new();
+                let audio = song_rs::encode(payload, 50).unwrap();
+                let mut decoder = song_rs::Decoder::new();
                 decoder.decode(&audio).unwrap().unwrap();
             });
         });

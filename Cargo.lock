@@ -382,17 +382,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ggwave-voice"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "hound",
- "nnnoiseless",
- "rustfft",
- "thiserror",
-]
-
-[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -793,6 +782,17 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "song-rs"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "hound",
+ "nnnoiseless",
+ "rustfft",
+ "thiserror",
+]
 
 [[package]]
 name = "strength_reduce"

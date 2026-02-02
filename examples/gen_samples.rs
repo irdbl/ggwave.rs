@@ -1,4 +1,4 @@
-use ggwave_voice::{StreamTx, StreamConfig};
+use song_rs::{StreamTx, StreamConfig};
 
 fn write_wav(path: &str, samples: &[f32]) {
     let spec = hound::WavSpec {
@@ -21,7 +21,7 @@ fn silence(n: usize) -> Vec<f32> {
 /// Single-message encode with padding.
 fn encode_single(text: &str, volume: u8) -> Vec<f32> {
     let mut audio = silence(24000); // 0.5s lead-in
-    let encoded = ggwave_voice::encode(text.as_bytes(), volume).unwrap();
+    let encoded = song_rs::encode(text.as_bytes(), volume).unwrap();
     audio.extend_from_slice(&encoded);
     audio.extend(silence(24000)); // 0.5s tail
     audio

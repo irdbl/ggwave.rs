@@ -7,8 +7,8 @@
 //! # Example
 //!
 //! ```
-//! let audio = ggwave_voice::encode(b"hello", 25).unwrap();
-//! let mut decoder = ggwave_voice::Decoder::new();
+//! let audio = song_rs::encode(b"hello", 25).unwrap();
+//! let mut decoder = song_rs::Decoder::new();
 //! let payload = decoder.decode(&audio).unwrap().unwrap();
 //! assert_eq!(&payload, b"hello");
 //! ```

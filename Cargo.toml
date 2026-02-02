@@ -1,9 +1,13 @@
 [package]
-name = "ggwave-voice"
+name = "song-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Voice-formant FSK codec — encode data as vowel-like audio that survives noise cancellation"
+description = "Voice-formant acoustic modem — encode data as vowel-like audio that survives noise cancellation"
 license = "MIT"
+
+[features]
+default = []
+8khz = []  # Use 8 kHz sample rate instead of 48 kHz
 
 [dependencies]
 rustfft = "6"

@@ -29,8 +29,11 @@ const MAX_FRAGMENTS: usize = 16;
 /// Maximum message size: 16 * 139 = 2,224 bytes.
 pub const MAX_MESSAGE_SIZE: usize = MAX_FRAGMENTS * MAX_FRAG_PAYLOAD;
 
-/// Samples per millisecond at 48 kHz.
+/// Samples per millisecond.
+#[cfg(not(feature = "8khz"))]
 const SAMPLES_PER_MS: u64 = 48;
+#[cfg(feature = "8khz")]
+const SAMPLES_PER_MS: u64 = 8;
 
 // --- Public types ---
 

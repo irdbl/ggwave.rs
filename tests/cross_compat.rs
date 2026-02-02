@@ -1,6 +1,6 @@
 //! 2-channel vocal modem tests: WAV generation and self round-trip.
 
-use ggwave_voice::Decoder;
+use song_rs::Decoder;
 
 /// Write f32 samples to a 48kHz WAV file.
 fn write_wav(path: &str, samples: &[f32]) {
@@ -46,14 +46,14 @@ fn test_generate_voice_wavs() {
     let fox = b"The quick brown fox jumps over the lazy dog".to_vec();
 
     let cases: Vec<(&[u8], &str)> = vec![
-        (b"hello", "/tmp/ggwave_voice_hello.wav"),
-        (b"a0Z5kR2g", "/tmp/ggwave_voice_a0z5.wav"),
-        (b"A", "/tmp/ggwave_voice_single.wav"),
-        (&fox, "/tmp/ggwave_voice_fox.wav"),
+        (b"hello", "/tmp/song_rs_hello.wav"),
+        (b"a0Z5kR2g", "/tmp/song_rs_a0z5.wav"),
+        (b"A", "/tmp/song_rs_single.wav"),
+        (&fox, "/tmp/song_rs_fox.wav"),
     ];
 
     for (payload, path) in &cases {
-        let audio = ggwave_voice::encode(payload, 50).unwrap();
+        let audio = song_rs::encode(payload, 50).unwrap();
         write_wav(path, &audio);
         eprintln!("Wrote {path}: {} samples ({:.2}s)", audio.len(), audio.len() as f64 / 48000.0);
 
@@ -76,7 +76,7 @@ fn test_single_byte_all_values() {
     let mut failures = Vec::new();
     for b in 0..=255u8 {
         let payload = [b];
-        let audio = ggwave_voice::encode(&payload, 50).unwrap();
+        let audio = song_rs::encode(&payload, 50).unwrap();
         let mut decoder = Decoder::new();
         match decoder.decode(&audio) {
             Ok(Some(data)) if data == vec![b] => {}
@@ -99,7 +99,7 @@ fn test_streaming_voice_decode() {
     let cases: &[&[u8]] = &[b"hello", b"A", b"test data"];
 
     for &payload in cases {
-        let audio = ggwave_voice::encode(payload, 50).unwrap();
+        let audio = song_rs::encode(payload, 50).unwrap();
         let mut decoder = Decoder::new();
         let mut result = None;
         for chunk in audio.chunks(256) {

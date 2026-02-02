@@ -19,7 +19,7 @@ fn main() {
         sample_format: hound::SampleFormat::Int,
     };
 
-    let path = "/tmp/ggwave_voice_play.wav";
+    let path = "/tmp/song_rs_play.wav";
     let mut writer = hound::WavWriter::create(path, spec).unwrap();
 
     // Half second of silence at the start
@@ -28,7 +28,7 @@ fn main() {
     }
 
     for (i, chunk) in chunks.iter().enumerate() {
-        let audio = ggwave_voice::encode(chunk, 50).unwrap();
+        let audio = song_rs::encode(chunk, 50).unwrap();
         for &s in &audio {
             let val = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
             writer.write_sample(val).unwrap();

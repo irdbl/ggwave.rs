@@ -1,5 +1,8 @@
 /// Sample rate in Hz.
+#[cfg(not(feature = "8khz"))]
 pub const SAMPLE_RATE: f64 = 48000.0;
+#[cfg(feature = "8khz")]
+pub const SAMPLE_RATE: f64 = 8000.0;
 
 /// Low fundamental frequency (G#3 = 208 Hz).
 pub const F0_LOW: f64 = 208.0;
@@ -11,16 +14,28 @@ pub const F0_HIGH: f64 = 277.0;
 pub const PITCH_THRESHOLD: f64 = 242.5;
 
 /// Number of harmonics in the synthesis model (H1=F0 .. H16=16*F0).
+/// At 8 kHz (Nyquist = 4 kHz), we use 14 harmonics to stay in band.
+/// (F0_HIGH=277Hz × 14 = 3878 Hz, safely under 4 kHz Nyquist)
+#[cfg(not(feature = "8khz"))]
 pub const NUM_HARMONICS: usize = 16;
+#[cfg(feature = "8khz")]
+pub const NUM_HARMONICS: usize = 14;
 
-/// Samples per symbol (50 ms at 48 kHz).
-pub const SAMPLES_PER_SYMBOL: usize = 2400;
+/// Samples per symbol (50 ms voiced duration).
+#[cfg(not(feature = "8khz"))]
+pub const SAMPLES_PER_SYMBOL: usize = 2400; // 50 ms at 48 kHz
+#[cfg(feature = "8khz")]
+pub const SAMPLES_PER_SYMBOL: usize = 400; // 50 ms at 8 kHz
 
 /// Guard silence after each symbol (10 ms).
-pub const GUARD_SAMPLES: usize = 480;
+#[cfg(not(feature = "8khz"))]
+pub const GUARD_SAMPLES: usize = 480; // 10 ms at 48 kHz
+#[cfg(feature = "8khz")]
+pub const GUARD_SAMPLES: usize = 80; // 10 ms at 8 kHz
 
 /// Total samples per symbol slot (symbol + guard).
-pub const SYMBOL_TOTAL_SAMPLES: usize = SAMPLES_PER_SYMBOL + GUARD_SAMPLES; // 2880
+/// 2880 at 48 kHz, 480 at 8 kHz.
+pub const SYMBOL_TOTAL_SAMPLES: usize = SAMPLES_PER_SYMBOL + GUARD_SAMPLES;
 
 /// Number of vowel shapes in the alphabet.
 /// Reduced to 4 for VoIP compatibility (F0_HIGH has only 6 harmonics in F2 band).

@@ -4,8 +4,14 @@
 //! - Phone line (bandpass + resample + μ-law codec + noise)
 //! - AM radio (narrow bandpass + echo + noise)
 //! - Individual distortions at various severities
+//!
+//! NOTE: These tests are designed for 48kHz mode only. At 8kHz, FFT resolution
+//! is too low, RNNoise requires 48kHz, and bandwidth constraints prevent
+//! many channel simulations from working. Skip at 8kHz.
 
-use ggwave_voice::Decoder;
+#![cfg(not(feature = "8khz"))]
+
+use song_rs::Decoder;
 use nnnoiseless::DenoiseState;
 use rustfft::{num_complex::Complex, FftPlanner};
 
@@ -252,28 +258,28 @@ fn try_decode(audio: &[f32], payload: &[u8]) -> bool {
 #[test]
 fn phone_bandpass() {
     let p = b"phone bandpass test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&bandpass(&audio, 300.0, 3400.0), p));
 }
 
 #[test]
 fn am_radio_bandpass() {
     let p = b"AM radio bandpass";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&bandpass(&audio, 300.0, 2500.0), p));
 }
 
 #[test]
 fn mulaw_only() {
     let p = b"mulaw codec test data";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&mulaw_codec(&audio), p));
 }
 
 #[test]
 fn resample_8k_only() {
     let p = b"resample 8k roundtrip";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&resample_8k(&audio), p));
 }
 
@@ -283,14 +289,14 @@ fn resample_8k_only() {
 #[test]
 fn echo_100ms() {
     let p = b"echo 100ms test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&add_echo(&audio, 100.0, 0.2), p));
 }
 
 #[test]
 fn agc_quiet_input() {
     let p = b"agc quiet test";
-    let audio = ggwave_voice::encode(p, 5).unwrap(); // very quiet
+    let audio = song_rs::encode(p, 5).unwrap(); // very quiet
     assert!(try_decode(&agc(&audio, 0.2), p));
 }
 
@@ -299,7 +305,7 @@ fn agc_quiet_input() {
 #[test]
 fn snr_sweep() {
     let p = b"SNR sweep test data here";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let mut threshold = 0.0;
     eprintln!();
@@ -324,7 +330,7 @@ fn snr_sweep() {
 #[test]
 fn phone_clean() {
     let p = b"The quick brown fox jumps over the lazy dog";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 3400.0);
     let out = mulaw_codec(&out);
@@ -335,7 +341,7 @@ fn phone_clean() {
 #[test]
 fn phone_noisy() {
     let p = b"noisy phone call test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 3400.0);
     let out = mulaw_codec(&out);
@@ -347,7 +353,7 @@ fn phone_noisy() {
 #[test]
 fn phone_resampled() {
     let p = b"resampled phone call";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = resample_8k(&audio);
     let out = mulaw_codec(&out);
@@ -358,7 +364,7 @@ fn phone_resampled() {
 #[test]
 fn am_radio_clean() {
     let p = b"AM radio transmission test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 2500.0);
     let out = add_echo(&out, 30.0, 0.15);
@@ -368,7 +374,7 @@ fn am_radio_clean() {
 #[test]
 fn am_radio_noisy() {
     let p = b"noisy AM radio test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 2500.0);
     let out = add_echo(&out, 50.0, 0.2);
@@ -379,7 +385,7 @@ fn am_radio_noisy() {
 #[test]
 fn worst_case_phone() {
     let p = b"worst case phone";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = resample_8k(&audio);
     let out = mulaw_codec(&out);
@@ -396,7 +402,7 @@ fn worst_case_phone() {
 #[test]
 fn phone_long_payload() {
     let p = b"This is a longer message to test robustness of the vocal modem through a simulated phone channel with realistic distortions applied";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 3400.0);
     let out = mulaw_codec(&out);
@@ -407,7 +413,7 @@ fn phone_long_payload() {
 #[test]
 fn am_long_payload() {
     let p = b"Testing the AM radio channel simulation with a longer payload to check for accumulated errors over many symbols";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 2500.0);
     let out = add_noise(&out, 20.0, 22222);
@@ -419,21 +425,21 @@ fn am_long_payload() {
 #[test]
 fn hard_clip_50pct() {
     let p = b"hard clip half amplitude";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&hard_clip(&audio, 0.5), p));
 }
 
 #[test]
 fn hard_clip_25pct() {
     let p = b"severe hard clipping";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&hard_clip(&audio, 0.25), p));
 }
 
 #[test]
 fn soft_clip_heavy() {
     let p = b"soft clip overdrive";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&soft_clip(&audio, 5.0), p));
 }
 
@@ -442,21 +448,21 @@ fn soft_clip_heavy() {
 #[test]
 fn freq_offset_plus_5hz() {
     let p = b"frequency drift up";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&freq_offset(&audio, 5.0), p));
 }
 
 #[test]
 fn freq_offset_minus_5hz() {
     let p = b"frequency drift down";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&freq_offset(&audio, -5.0), p));
 }
 
 #[test]
 fn freq_offset_sweep() {
     let p = b"freq offset sweep data";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     eprintln!();
     let mut max_offset = 0.0;
@@ -474,7 +480,7 @@ fn freq_offset_sweep() {
 #[test]
 fn reverb_small_room() {
     let p = b"small room reverb";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let out = reverb(&audio, &[(15.0, 0.3), (30.0, 0.15), (50.0, 0.08)]);
     assert!(try_decode(&out, p));
 }
@@ -482,7 +488,7 @@ fn reverb_small_room() {
 #[test]
 fn reverb_large_room() {
     let p = b"large room reverb test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let out = reverb(&audio, &[(25.0, 0.25), (60.0, 0.15), (100.0, 0.10), (150.0, 0.05)]);
     assert!(try_decode(&out, p));
 }
@@ -492,7 +498,7 @@ fn reverb_large_room() {
 #[test]
 fn wow_slow() {
     let p = b"slow wow flutter";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     // ±10 samples wobble at 2 Hz (turntable / tape wow)
     assert!(try_decode(&wow_flutter(&audio, 10.0, 2.0), p));
 }
@@ -500,7 +506,7 @@ fn wow_slow() {
 #[test]
 fn flutter_fast() {
     let p = b"fast flutter test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     // ±5 samples at 8 Hz (motor flutter)
     assert!(try_decode(&wow_flutter(&audio, 5.0, 8.0), p));
 }
@@ -513,14 +519,14 @@ fn flutter_fast() {
 #[test]
 fn notch_at_1500hz() {
     let p = b"notch filter 1.5kHz";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&notch_filter(&audio, 1500.0, 100.0), p));
 }
 
 #[test]
 fn double_notch() {
     let p = b"two notch filters";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let out = notch_filter(&audio, 900.0, 80.0);
     let out = notch_filter(&out, 1800.0, 80.0);
     assert!(try_decode(&out, p));
@@ -531,7 +537,7 @@ fn double_notch() {
 #[test]
 fn fading_moderate() {
     let p = b"moderate signal fading";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     // Gain varies between 0.3 and 1.0 at 0.5 Hz
     assert!(try_decode(&fading(&audio, 0.3, 0.5), p));
 }
@@ -539,7 +545,7 @@ fn fading_moderate() {
 #[test]
 fn fading_deep() {
     let p = b"deep fading channel";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     // Gain varies between 0.1 and 1.0 at 1 Hz
     assert!(try_decode(&fading(&audio, 0.1, 1.0), p));
 }
@@ -549,14 +555,14 @@ fn fading_deep() {
 #[test]
 fn quantize_8bit() {
     let p = b"8 bit quantization";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&quantize(&audio, 8), p));
 }
 
 #[test]
 fn quantize_6bit() {
     let p = b"6 bit quantization test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     assert!(try_decode(&quantize(&audio, 6), p));
 }
 
@@ -565,7 +571,7 @@ fn quantize_6bit() {
 #[test]
 fn phone_with_clipping() {
     let p = b"phone call with clipped mic";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = hard_clip(&audio, 0.4);
     let out = bandpass(&out, 300.0, 3400.0);
@@ -577,7 +583,7 @@ fn phone_with_clipping() {
 #[test]
 fn phone_with_reverb() {
     let p = b"phone in reverberant room";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = reverb(&audio, &[(20.0, 0.25), (45.0, 0.12), (80.0, 0.06)]);
     let out = bandpass(&out, 300.0, 3400.0);
@@ -589,7 +595,7 @@ fn phone_with_reverb() {
 #[test]
 fn am_radio_with_fading() {
     let p = b"AM radio with signal fading";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 2500.0);
     let out = fading(&out, 0.2, 0.8);
@@ -601,7 +607,7 @@ fn am_radio_with_fading() {
 #[test]
 fn voip_narrowband() {
     let p = b"VoIP narrowband codec";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     // Narrower than phone: 400-3000 Hz (aggressive VoIP codec)
     let out = bandpass(&audio, 400.0, 3000.0);
@@ -613,7 +619,7 @@ fn voip_narrowband() {
 #[test]
 fn walkie_talkie() {
     let p = b"walkie talkie channel";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = bandpass(&audio, 300.0, 3000.0);
     let out = hard_clip(&out, 0.5);
@@ -625,7 +631,7 @@ fn walkie_talkie() {
 #[test]
 fn speakerphone_in_meeting_room() {
     let p = b"speakerphone meeting room";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     // Reduced first reflection from 0.3 to 0.25 for realistic speakerphone scenario
     let out = reverb(&audio, &[(12.0, 0.25), (28.0, 0.15), (55.0, 0.10), (90.0, 0.05)]);
@@ -644,7 +650,7 @@ fn speakerphone_in_meeting_room() {
 #[test]
 fn nightmare_channel() {
     let p = b"nightmare channel test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = reverb(&audio, &[(15.0, 0.2), (35.0, 0.1)]);
     let out = soft_clip(&out, 3.0);
@@ -662,7 +668,7 @@ fn nightmare_channel() {
 #[test]
 fn nightmare_long_payload() {
     let p = b"This is a longer message pushed through the nightmare channel with reverb, clipping, resampling, codec, bandpass, frequency drift, and noise";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let out = reverb(&audio, &[(20.0, 0.15), (45.0, 0.08)]);
     let out = hard_clip(&out, 0.5);
@@ -680,7 +686,7 @@ fn nightmare_long_payload() {
 #[test]
 fn snr_sweep_phone_channel() {
     let p = b"SNR sweep through phone";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     let base = mulaw_codec(&bandpass(&audio, 300.0, 3400.0));
 
@@ -710,7 +716,7 @@ fn snr_deep_sweep_erasure_benefit() {
 
     eprintln!();
     for p in payloads {
-        let audio = ggwave_voice::encode(p, 50).unwrap();
+        let audio = song_rs::encode(p, 50).unwrap();
         let base = mulaw_codec(&bandpass(&audio, 300.0, 3400.0));
 
         let mut lowest_pass = f64::MAX;
@@ -805,7 +811,7 @@ fn rnnoise_clean() {
     // Clean modem audio through RNNoise — should survive since the modem
     // uses voice-like formants that RNNoise should preserve.
     let p = b"rnnoise clean channel test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let denoised = apply_rnnoise(&audio);
     assert!(try_decode(&denoised, p), "clean audio through RNNoise");
 }
@@ -814,7 +820,7 @@ fn rnnoise_clean() {
 fn rnnoise_with_noise_20db() {
     // Add noise, then denoise — RNNoise should help or at least not hurt.
     let p = b"rnnoise noisy 20dB test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let noisy = add_noise(&audio, 20.0, 42);
     let denoised = apply_rnnoise(&noisy);
     assert!(try_decode(&denoised, p), "RNNoise after 20 dB noise");
@@ -824,7 +830,7 @@ fn rnnoise_with_noise_20db() {
 fn rnnoise_long_payload() {
     // Longer payload through RNNoise with moderate noise.
     let p = b"This is a longer message to test RNNoise noise cancellation survival with more symbols and FEC codewords involved";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let noisy = add_noise(&audio, 20.0, 123);
     let denoised = apply_rnnoise(&noisy);
     assert!(try_decode(&denoised, p), "RNNoise long payload at 20 dB");
@@ -835,7 +841,7 @@ fn rnnoise_phone_pipeline() {
     // Full phone channel + RNNoise (simulates a VoIP call with noise suppression).
     // Typical office noise is ~20 dB SNR.
     let p = b"rnnoise phone pipeline";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let out = bandpass(&audio, 300.0, 3400.0);
     let out = mulaw_codec(&out);
     let out = add_noise(&out, 20.0, 456);
@@ -847,7 +853,7 @@ fn rnnoise_phone_pipeline() {
 fn rnnoise_reverb_pipeline() {
     // Reverberant room + moderate noise + RNNoise
     let p = b"rnnoise reverb pipeline";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let out = reverb(&audio, &[(15.0, 0.2), (35.0, 0.1)]);
     let out = add_noise(&out, 20.0, 789);
     let out = apply_rnnoise(&out);
@@ -858,7 +864,7 @@ fn rnnoise_reverb_pipeline() {
 fn rnnoise_speakerphone() {
     // Speakerphone: reverb + bandpass + AGC + noise + RNNoise
     let p = b"rnnoise speakerphone test";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
     let out = reverb(&audio, &[(12.0, 0.2), (28.0, 0.1)]);
     let out = bandpass(&out, 300.0, 3400.0);
     let out = agc(&out, 0.3);
@@ -871,7 +877,7 @@ fn rnnoise_speakerphone() {
 fn rnnoise_snr_sweep() {
     // Sweep SNR to find the threshold where RNNoise + modem still works.
     let p = b"rnnoise SNR sweep data";
-    let audio = ggwave_voice::encode(p, 50).unwrap();
+    let audio = song_rs::encode(p, 50).unwrap();
 
     eprintln!();
     let mut threshold = 0.0;
@@ -889,4 +895,96 @@ fn rnnoise_snr_sweep() {
         try_decode(&apply_rnnoise(&add_noise(&audio, 20.0, 42)), p),
         "must survive 20 dB SNR through RNNoise"
     );
+}
+
+// ── Teams/WebRTC spectral shaping tests ──────────────────────────────
+//
+// Real-world Teams call analysis showed this spectral filter:
+//   - F0 (208 Hz): BOOSTED 78x (voice optimization lifts fundamental)
+//   - F1 band (400-850 Hz): attenuated 50-2000x (heavily crushed)
+//   - F2 band (2000-2500 Hz): attenuated ~280x (less than F1)
+//
+// This kills vowel classification because F1 formants are crushed.
+
+/// Apply Teams-like spectral shaping: boost F0, crush F1, preserve F2.
+fn teams_spectral_filter(samples: &[f32], f1_atten_db: f64, f0_boost_db: f64) -> Vec<f32> {
+    let n = samples.len();
+    let hz_per_bin = SAMPLE_RATE / n as f64;
+
+    let mut buf: Vec<Complex<f32>> = samples.iter().map(|&s| Complex::new(s, 0.0)).collect();
+    let mut planner = FftPlanner::new();
+    planner.plan_fft_forward(n).process(&mut buf);
+
+    for (i, c) in buf.iter_mut().enumerate() {
+        let freq = if i <= n / 2 {
+            i as f64 * hz_per_bin
+        } else {
+            (n - i) as f64 * hz_per_bin
+        };
+
+        // Frequency-dependent gain (linear scale)
+        let gain_db = if freq < 250.0 {
+            // Low frequencies: boost F0 region
+            f0_boost_db * (1.0 - (freq - 208.0).abs() / 50.0).max(0.0)
+        } else if freq >= 400.0 && freq <= 850.0 {
+            // F1 band: heavy attenuation
+            -f1_atten_db
+        } else if freq > 850.0 && freq < 2000.0 {
+            // Transition: gradual recovery
+            -f1_atten_db * (1.0 - (freq - 850.0) / 1150.0)
+        } else if freq >= 2000.0 && freq <= 2500.0 {
+            // F2 band: moderate attenuation (less than F1)
+            -f1_atten_db * 0.3
+        } else {
+            0.0
+        };
+
+        let gain = 10.0f64.powf(gain_db / 20.0) as f32;
+        *c = Complex::new(c.re * gain, c.im * gain);
+    }
+
+    planner.plan_fft_inverse(n).process(&mut buf);
+    buf.iter().map(|c| c.re / n as f32).collect()
+}
+
+#[test]
+#[should_panic]
+fn teams_f1_attenuation_moderate() {
+    // F1 attenuated 34 dB (~50x), F0 boosted 10 dB
+    let p = b"teams moderate f1 attenuation";
+    let audio = song_rs::encode(p, 50).unwrap();
+    let filtered = teams_spectral_filter(&audio, 34.0, 10.0);
+    assert!(try_decode(&filtered, p), "teams moderate F1 attenuation");
+}
+
+#[test]
+#[should_panic]
+fn teams_f1_attenuation_heavy() {
+    // F1 attenuated 50 dB (~300x), F0 boosted 20 dB
+    let p = b"teams heavy f1 attenuation";
+    let audio = song_rs::encode(p, 50).unwrap();
+    let filtered = teams_spectral_filter(&audio, 50.0, 20.0);
+    assert!(try_decode(&filtered, p), "teams heavy F1 attenuation");
+}
+
+#[test]
+#[should_panic]
+fn teams_f1_attenuation_extreme() {
+    // F1 attenuated 66 dB (~2000x) — matches worst case from real Teams call
+    let p = b"teams extreme f1 attenuation";
+    let audio = song_rs::encode(p, 50).unwrap();
+    let filtered = teams_spectral_filter(&audio, 66.0, 38.0);
+    assert!(try_decode(&filtered, p), "teams extreme F1 attenuation");
+}
+
+#[test]
+#[should_panic]
+fn teams_full_pipeline() {
+    // Full Teams-like pipeline: spectral shaping + noise cancellation + AGC
+    let p = b"teams full pipeline test";
+    let audio = song_rs::encode(p, 50).unwrap();
+    let out = teams_spectral_filter(&audio, 40.0, 15.0);
+    let out = apply_rnnoise(&out);
+    let out = agc(&out, 0.3);
+    assert!(try_decode(&out, p), "teams full pipeline");
 }
