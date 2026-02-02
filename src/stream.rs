@@ -16,14 +16,14 @@ use crate::rs4::ReedSolomon4;
 /// Codeword length for GF(2^4): n = 2^4 - 1 = 15.
 const CODEWORD_LEN: usize = 15;
 
-/// Stream start preamble: uses max-distance vowel pair (vowels 0 and 7).
-const STREAM_PREAMBLE_START: [u8; PREAMBLE_LEN] = [0, 14, 0, 14];
+/// Stream start preamble: uses max-distance vowel pair (vowels 0 and 3).
+const STREAM_PREAMBLE_START: [u8; PREAMBLE_LEN] = [0, 6, 0, 6];
 
 /// Stream end preamble: inverted pattern.
-const STREAM_PREAMBLE_END: [u8; PREAMBLE_LEN] = [14, 0, 14, 0];
+const STREAM_PREAMBLE_END: [u8; PREAMBLE_LEN] = [6, 0, 6, 0];
 
 /// Vowel-only patterns for preamble detection (more robust than full symbol match).
-const STREAM_PREAMBLE_START_VOWELS: [usize; PREAMBLE_LEN] = [0, 7, 0, 7];
+const STREAM_PREAMBLE_START_VOWELS: [usize; PREAMBLE_LEN] = [0, 3, 0, 3];
 /// Confidence threshold for erasure marking.
 const ERASURE_THRESHOLD: f64 = 1.0;
 
@@ -619,8 +619,8 @@ fn classify_window_vowel(window: &[f32]) -> usize {
     let mut spectrum = vec![0.0f32; voiced.len()];
     fft::power_spectrum_raw(voiced, &mut spectrum);
     let f0 = formant::detect_f0(&spectrum);
-    let (f1, f2) = formant::detect_formants(&spectrum, f0);
-    let (vowel_idx, _) = formant::classify_vowel(f1, f2);
+    let f2 = formant::detect_formants(&spectrum, f0);
+    let (vowel_idx, _) = formant::classify_vowel(f2);
     vowel_idx
 }
 

@@ -384,9 +384,13 @@ mod tests {
         let payload = b"padded";
         let audio = encode(payload, 50).unwrap();
 
-        let mut padded = vec![0.0f32; 24000];
+        // Use window-aligned padding to avoid partial-window misalignment issues
+        // at the boundary between silence and audio.
+        let aligned_padding = (24000 / crate::protocol::SYMBOL_TOTAL_SAMPLES + 1)
+            * crate::protocol::SYMBOL_TOTAL_SAMPLES;
+        let mut padded = vec![0.0f32; aligned_padding];
         padded.extend_from_slice(&audio);
-        padded.extend(vec![0.0f32; 24000]);
+        padded.extend(vec![0.0f32; aligned_padding]);
 
         let mut decoder = Decoder::new();
         let result = decoder.decode(&padded).unwrap();

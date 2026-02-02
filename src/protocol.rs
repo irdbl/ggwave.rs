@@ -23,16 +23,17 @@ pub const GUARD_SAMPLES: usize = 480;
 pub const SYMBOL_TOTAL_SAMPLES: usize = SAMPLES_PER_SYMBOL + GUARD_SAMPLES; // 2880
 
 /// Number of vowel shapes in the alphabet.
-pub const NUM_VOWELS: usize = 8;
+/// Reduced to 4 for VoIP compatibility (F0_HIGH has only 6 harmonics in F2 band).
+pub const NUM_VOWELS: usize = 4;
 
 /// Number of pitch classes.
 pub const NUM_PITCHES: usize = 2;
 
-/// Total symbol alphabet size (8 * 2 = 16).
+/// Total symbol alphabet size (4 * 2 = 8).
 pub const NUM_SYMBOLS: usize = NUM_VOWELS * NUM_PITCHES;
 
-/// Bits per symbol (log2(16) = 4).
-pub const BITS_PER_SYMBOL: usize = 4;
+/// Bits per symbol (log2(8) = 3).
+pub const BITS_PER_SYMBOL: usize = 3;
 
 /// Preamble length in symbols.
 pub const PREAMBLE_LEN: usize = 4;
@@ -44,19 +45,24 @@ pub const FFT_SIZE: usize = SAMPLES_PER_SYMBOL;
 pub const HZ_PER_BIN: f64 = SAMPLE_RATE / FFT_SIZE as f64;
 
 /// Formant bandwidth for F1 (Hz) — Gaussian sigma.
+/// (Unused in F2-only mode, kept for compatibility)
 pub const BW1: f64 = 80.0;
 
 /// Formant bandwidth for F2 (Hz) — Gaussian sigma.
-pub const BW2: f64 = 120.0;
+/// Very wide bandwidth (300 Hz) helps with F0-independent detection
+/// by spreading energy across multiple harmonics.
+pub const BW2: f64 = 300.0;
 
-/// F1 band lower bound (Hz) — above 300 Hz phone cutoff.
+/// F1 band lower bound (Hz).
+/// (Unused in F2-only mode — VoIP crushes this band)
 pub const F1_LO: f64 = 300.0;
 
 /// F1 band upper bound (Hz).
+/// (Unused in F2-only mode)
 pub const F1_HI: f64 = 850.0;
 
-/// F2 band lower bound (Hz).
-pub const F2_LO: f64 = 850.0;
+/// F2 band lower bound (Hz) — above VoIP processing.
+pub const F2_LO: f64 = 1000.0;
 
 /// F2 band upper bound (Hz).
 pub const F2_HI: f64 = 2500.0;

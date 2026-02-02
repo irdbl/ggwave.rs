@@ -6,13 +6,13 @@ use crate::protocol::*;
 use crate::reed_solomon::ReedSolomon;
 
 /// Preamble vowel patterns for start detection (vowel-only, robust to misalignment).
-const PREAMBLE_START_VOWELS: [usize; PREAMBLE_LEN] = [0, 7, 0, 7];
+const PREAMBLE_START_VOWELS: [usize; PREAMBLE_LEN] = [0, 3, 0, 3];
 
 /// Preamble vowel patterns for end detection.
-const PREAMBLE_END_VOWELS: [usize; PREAMBLE_LEN] = [7, 0, 7, 0];
+const PREAMBLE_END_VOWELS: [usize; PREAMBLE_LEN] = [3, 0, 3, 0];
 
 /// End preamble full symbol values for precise matching in analyze().
-const PREAMBLE_END_SYMBOLS: [usize; PREAMBLE_LEN] = [14, 0, 14, 0];
+const PREAMBLE_END_SYMBOLS: [usize; PREAMBLE_LEN] = [6, 0, 6, 0];
 
 /// Number of history windows to keep during Listening for alignment recovery.
 const HISTORY_WINDOWS: usize = 6;
@@ -30,6 +30,10 @@ pub struct Decoder {
     history: Vec<Vec<f32>>,
     /// Accumulated classified symbols during Receiving (for best-effort preview).
     preview_symbols: Vec<usize>,
+    /// Counter for consecutive silence windows (for gap detection).
+    silence_count: usize,
+    /// Counter for consecutive active windows without preamble match.
+    active_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +61,8 @@ impl Decoder {
             max_record_symbols: 0,
             history: Vec::new(),
             preview_symbols: Vec::new(),
+            silence_count: 0,
+            active_count: 0,
         }
     }
 
@@ -103,23 +109,53 @@ impl Decoder {
             DecoderState::Listening => {
                 let vowel = self.classify_window_vowel(window);
 
+                // Track silence for gap detection. When we see sustained silence,
+                // clear state so the next audio frame gets clean preamble detection.
+                if vowel == NUM_VOWELS {
+                    self.silence_count += 1;
+                    self.active_count = 0;
+                    // After ~4 windows of silence (~60ms at any sample rate),
+                    // clear history and recent_vowels to reset alignment.
+                    if self.silence_count >= 4 {
+                        self.history.clear();
+                        self.recent_vowels.clear();
+                    }
+                } else {
+                    self.silence_count = 0;
+                    self.active_count += 1;
+                }
+
                 // Keep history for alignment recovery
                 self.history.push(window.to_vec());
                 if self.history.len() > HISTORY_WINDOWS {
                     self.history.remove(0);
                 }
 
-                self.recent_vowels.push(vowel);
-                if self.recent_vowels.len() > PREAMBLE_LEN {
-                    self.recent_vowels
-                        .drain(..self.recent_vowels.len() - PREAMBLE_LEN);
+                // Only track non-silence vowels for preamble detection.
+                // This makes detection robust to misaligned windows at frame boundaries.
+                if vowel != NUM_VOWELS {
+                    self.recent_vowels.push(vowel);
+                    if self.recent_vowels.len() > PREAMBLE_LEN {
+                        self.recent_vowels
+                            .drain(..self.recent_vowels.len() - PREAMBLE_LEN);
+                    }
+
+                    if self.recent_vowels.len() == PREAMBLE_LEN
+                        && self.recent_vowels[..] == PREAMBLE_START_VOWELS[..]
+                    {
+                        self.start_receiving();
+                    }
                 }
 
-                if self.recent_vowels.len() == PREAMBLE_LEN
-                    && self.recent_vowels[..] == PREAMBLE_START_VOWELS[..]
-                {
+                // Fallback: if we've seen many active windows without preamble match,
+                // force into receiving mode. The multi-offset analysis will find alignment.
+                // This handles misaligned frame boundaries (e.g., after dropped frame).
+                // Threshold must be higher than preamble length (4 windows) to avoid false triggers.
+                // 12 windows ≈ 720ms is safely above typical message lengths.
+                if self.active_count >= 12 && self.history.len() >= HISTORY_WINDOWS {
                     self.start_receiving();
                 }
+
                 Ok(None)
             }
             DecoderState::Receiving => {
@@ -190,8 +226,8 @@ impl Decoder {
         let mut spectrum = vec![0.0f32; voiced.len()];
         fft::power_spectrum_raw(voiced, &mut spectrum);
         let f0 = formant::detect_f0(&spectrum);
-        let (f1, f2) = formant::detect_formants(&spectrum, f0);
-        let (vowel_idx, _) = formant::classify_vowel(f1, f2);
+        let f2 = formant::detect_formants(&spectrum, f0);
+        let (vowel_idx, _) = formant::classify_vowel(f2);
         vowel_idx
     }
 
